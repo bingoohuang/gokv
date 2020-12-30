@@ -34,15 +34,34 @@ type Client struct {
 	cacheLock sync.Mutex
 }
 
+func DefaultDuration(s, defaultValue time.Duration) time.Duration {
+	if s == 0 {
+		return defaultValue
+	}
+	return s
+}
+func Default(s, defaultValue string) string {
+	if s == "" {
+		return defaultValue
+	}
+
+	return s
+}
+
 func NewClient(c Config) *Client {
+	c.RefreshInterval = DefaultDuration(c.RefreshInterval, 60*time.Second)
+	c.DriverName = Default(c.DriverName, "mysql")
+	c.KeysSQL = Default(c.KeysSQL, "select k from kv where state = 1")
+	c.GetSQL = Default(c.GetSQL, "select v from kv where k = '{{.Key}}' and state = 1")
+	c.SetSQL = Default(c.SetSQL, "update kv set v = '{{.Value}}', updated = '{{.Time}}' where k = '{{.Key}}' and state = 1")
+	c.DeleteSQL = Default(c.DeleteSQL, "update kv set state = 0, updated = '{{.Time}}' where k = '{{.Key}}' and state = 1")
+
 	client := &Client{
 		Config: c,
 		cache:  make(map[string]CacheValue),
 	}
 
-	if client.RefreshInterval > 0 {
-		go client.tickerRefresh()
-	}
+	go client.tickerRefresh()
 
 	return client
 }

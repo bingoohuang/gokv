@@ -41,12 +41,7 @@ func TestSQL(t *testing.T) {
 	}()
 
 	client := sqlc.NewClient(sqlc.Config{
-		DriverName:     "mysql",
 		DataSourceName: fmt.Sprintf("user:pass@tcp(localhost:%d)/testdb", port),
-		KeysSQL:        "select k from kv where state = 1",
-		GetSQL:         "select v from kv where k = '{{.Key}}' and state = 1",
-		SetSQL:         "update kv set v = '{{.Value}}', updated = '{{.Time}}' where k = '{{.Key}}' and state = 1",
-		DeleteSQL:      "update kv set state = 0, updated = '{{.Time}}' where k = '{{.Key}}' and state = 1",
 	})
 
 	k := "Key1"
@@ -81,6 +76,8 @@ func createTestDatabase(dbName string) (*memory.Database, error) {
 		{Name: "updated", Type: sql.VarChar(30), Nullable: true, Source: tableName},
 		{Name: "created", Type: sql.VarChar(30), Nullable: true, Source: tableName},
 	})
+
+	fmt.Println(table.String())
 
 	db.AddTable(tableName, table)
 	ctx := sql.NewEmptyContext()
