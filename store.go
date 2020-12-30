@@ -1,50 +1,18 @@
 package gokv
 
-import "time"
-
-type (
-	GeneratorFn func(k string) (string, Option, error)
-	OptionFn    func(*Option)
-	OptionFns   []OptionFn
-
-	Option struct {
-		Expired time.Time
-	}
-)
-
-func (o OptionFns) Apply(option *Option) *Option {
-	for _, f := range o {
-		f(option)
-	}
-
-	return option
-}
-
-func Expired(v time.Duration) OptionFn { return func(o *Option) { o.Expired = time.Now().Add(v) } }
-func Apply(v Option) OptionFn          { return func(o *Option) { *o = v } }
-
 type StoreKeys interface {
 	// Keys list the keys in the store.
 	Keys() ([]string, error)
 }
 
-type StoreSet interface {
+type Store interface {
 	// Set stores the given value for the given key.
-	// The implementation automatically marshalls the value.
-	// The marshalling format depends on the implementation. It can be JSON, gob etc.
-	// The key must not be "" and the value must not be nil.
-	Set(k, v string, fns ...OptionFn) error
-}
-
-type StoreGet interface {
+	Set(k, v string) error
 	// Get retrieves the value for the given key.
-	Get(k string, fn GeneratorFn) (found bool, v string, option Option, err error)
-}
-
-type StoreDel interface {
+	Get(k string) (v string, err error)
 	// Del deletes the stored value for the given key.
 	// Deleting a non-existing key-value pair does NOT lead to an error.
-	Del(k string) (found bool, err error)
+	Del(k string) error
 }
 
 type Closer interface {

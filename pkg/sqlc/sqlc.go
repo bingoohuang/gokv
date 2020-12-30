@@ -6,9 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/bingoohuang/gokv"
-	"github.com/bingoohuang/gokv/pkg/codec"
-	"github.com/bingoohuang/gokv/pkg/util"
 	"go.uber.org/multierr"
 	"log"
 	"sync"
@@ -25,8 +22,6 @@ type Config struct {
 	SetSQL    string
 	DeleteSQL string
 
-	Codec codec.Codec
-
 	// RefreshInterval will Refresh the key values from the database in every Refresh interval.
 	RefreshInterval time.Duration
 }
@@ -35,18 +30,14 @@ type Config struct {
 type Client struct {
 	Config
 
-	Cache     map[string]CacheValue
+	cache     map[string]CacheValue
 	cacheLock sync.Mutex
 }
 
 func NewClient(c Config) *Client {
 	client := &Client{
 		Config: c,
-		Cache:  make(map[string]CacheValue),
-	}
-
-	if client.Codec == nil {
-		client.Codec = codec.JSON
+		cache:  make(map[string]CacheValue),
 	}
 
 	if client.RefreshInterval > 0 {
@@ -59,7 +50,6 @@ func NewClient(c Config) *Client {
 // CacheValue is a holder for value and option associated with a key.
 type CacheValue struct {
 	Value      string
-	Option     gokv.Option
 	UpdateTime time.Time
 }
 
@@ -91,9 +81,9 @@ func (c *Client) Refresh() error {
 	cacheKeys := make([]string, 0)
 
 	c.cacheLock.Lock()
-	for k := range c.Cache {
+	for k := range c.cache {
 		if !keysMap[k] {
-			delete(c.Cache, k)
+			delete(c.cache, k)
 		} else {
 			cacheKeys = append(cacheKeys, k)
 		}
@@ -102,10 +92,10 @@ func (c *Client) Refresh() error {
 
 	for _, k := range cacheKeys {
 		c.cacheLock.Lock()
-		delete(c.Cache, k)
+		delete(c.cache, k)
 		c.cacheLock.Unlock()
 
-		if _, _, _, err := c.Get(k, nil); err != nil {
+		if _, _, err := c.Get(k); err != nil {
 			return err
 		}
 	}
@@ -164,18 +154,7 @@ func (c *Client) Keys() (keys []string, er error) {
 // Set stores the given value for the given key.
 // Values are automatically marshalled to JSON or gob (depending on the configuration).
 // The key must not be "" and the value must not be nil.
-func (c *Client) Set(k, v string, fns ...gokv.OptionFn) (er error) {
-	if err := util.CheckKeyAndValue(k, v); err != nil {
-		return err
-	}
-
-	option := gokv.OptionFns(fns).Apply(&gokv.Option{})
-
-	optionData, err := c.Codec.Marshal(option)
-	if err != nil {
-		return err
-	}
-
+func (c *Client) Set(k, v string) (er error) {
 	t, err := template.New("").Parse(c.SetSQL)
 	if err != nil {
 		return err
@@ -183,10 +162,9 @@ func (c *Client) Set(k, v string, fns ...gokv.OptionFn) (er error) {
 
 	var out bytes.Buffer
 	if err := t.Execute(&out, map[string]string{
-		"Key":    k,
-		"Value":  v,
-		"Option": string(optionData),
-		"Time":   time.Now().Format(`2006-01-02 15:04:05.000`),
+		"Key":   k,
+		"Value": v,
+		"Time":  time.Now().Format(`2006-01-02 15:04:05.000`),
 	}); err != nil {
 		return err
 	}
@@ -209,9 +187,8 @@ func (c *Client) Set(k, v string, fns ...gokv.OptionFn) (er error) {
 	}
 
 	c.cacheLock.Lock()
-	c.Cache[k] = CacheValue{
+	c.cache[k] = CacheValue{
 		Value:      v,
-		Option:     *option,
 		UpdateTime: time.Now(),
 	}
 	c.cacheLock.Unlock()
@@ -224,28 +201,23 @@ func (c *Client) Set(k, v string, fns ...gokv.OptionFn) (er error) {
 // the automatic unmarshalling can populate the fields of the object
 // that v points to with the values of the retrieved object's values.
 // If no value is found it returns (false, nil).
-// The key must not be "" and the pointer must not be nil.
-func (c *Client) Get(k string, fn gokv.GeneratorFn) (found bool, v string, option gokv.Option, er error) {
-	if err := util.CheckKeyAndValue(k, v); err != nil {
-		return false, "", option, err
-	}
-
+func (c *Client) Get(k string) (found bool, v string, er error) {
 	c.cacheLock.Lock()
-	if v, ok := c.Cache[k]; ok {
+	if v, ok := c.cache[k]; ok {
 		c.cacheLock.Unlock()
 
-		return true, v.Value, v.Option, nil
+		return true, v.Value, nil
 	}
 	c.cacheLock.Unlock()
 
 	t, err := template.New("").Parse(c.GetSQL)
 	if err != nil {
-		return false, "", option, err
+		return false, "", err
 	}
 
 	var out bytes.Buffer
 	if err := t.Execute(&out, map[string]string{"Key": k}); err != nil {
-		return false, "", option, err
+		return false, "", err
 	}
 
 	query := out.String()
@@ -253,7 +225,7 @@ func (c *Client) Get(k string, fn gokv.GeneratorFn) (found bool, v string, optio
 
 	db, err := sql.Open(c.DriverName, c.DataSourceName)
 	if err != nil {
-		return false, "", option, err
+		return false, "", err
 	}
 
 	defer func() { er = multierr.Append(er, db.Close()) }()
@@ -263,7 +235,7 @@ func (c *Client) Get(k string, fn gokv.GeneratorFn) (found bool, v string, optio
 
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
-		return false, "", option, err
+		return false, "", err
 	}
 
 	cols, _ := rows.Columns()
@@ -271,7 +243,7 @@ func (c *Client) Get(k string, fn gokv.GeneratorFn) (found bool, v string, optio
 
 	for ; rows.Next(); row++ {
 		if row >= 1 {
-			return false, "", option, fmt.Errorf("key:%s, error:%w", k, ErrTooManyValues)
+			return false, "", fmt.Errorf("key:%s, error:%w", k, ErrTooManyValues)
 		}
 
 		columns := make([]sql.NullString, len(cols))
@@ -281,57 +253,47 @@ func (c *Client) Get(k string, fn gokv.GeneratorFn) (found bool, v string, optio
 		}
 
 		if err := rows.Scan(pointers...); err != nil {
-			return false, "", option, err
+			return false, "", err
 		}
 
-		if columns[0].String != "" {
-			v = columns[0].String
-		}
-
-		if len(cols) > 1 && columns[1].String != "" {
-			if err := c.Codec.Unmarshal([]byte(columns[1].String), &option); err != nil {
-				return false, "", option, err
-			}
-		}
+		v = columns[0].String
 	}
 
-	if row == 0 && fn == nil {
-		return false, v, option, nil
-	} else if row == 1 {
+	if row == 1 {
 		c.cacheLock.Lock()
-		c.Cache[k] = CacheValue{
+		c.cache[k] = CacheValue{
 			Value:      v,
-			Option:     option,
 			UpdateTime: time.Now(),
 		}
 		c.cacheLock.Unlock()
 
-		return true, v, option, nil
+		return true, v, nil
 	}
 
-	v, newOption, err := fn(k)
-	if err != nil {
-		return false, "", option, err
-	}
-
-	if err := c.Set(k, v, gokv.Apply(newOption)); err != nil {
-		return false, "", option, err
-	}
-
-	return true, v, newOption, nil
+	return false, "", nil
 }
 
 // Del deletes the stored value for the given key.
 // Deleting a non-existing key-value pair does NOT lead to an error.
 // The key must not be "".
-func (c *Client) Del(k string) (found bool, er error) {
-	if err := util.CheckKey(k); err != nil {
-		return false, err
-	}
+func (c *Client) Del(k string) (er error) {
+	c.cacheLock.Lock()
+	delete(c.cache, k)
+	c.cacheLock.Unlock()
 
+	defer func() {
+		if err := c.del(k); err != nil {
+			log.Printf("W! failed to del %v", err)
+		}
+	}()
+
+	return nil
+
+}
+func (c *Client) del(k string) (er error) {
 	t, err := template.New("").Parse(c.DeleteSQL)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	var out bytes.Buffer
@@ -339,7 +301,7 @@ func (c *Client) Del(k string) (found bool, er error) {
 		"Key":  k,
 		"Time": time.Now().Format(`2006-01-02 15:04:05.000`),
 	}); err != nil {
-		return false, err
+		return err
 	}
 
 	query := out.String()
@@ -347,7 +309,7 @@ func (c *Client) Del(k string) (found bool, er error) {
 
 	db, err := sql.Open(c.DriverName, c.DataSourceName)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	defer func() { er = multierr.Append(er, db.Close()) }()
@@ -356,12 +318,8 @@ func (c *Client) Del(k string) (found bool, er error) {
 	defer cancel()
 
 	if _, err := db.ExecContext(ctx, query); err != nil {
-		return false, err
+		return err
 	}
 
-	c.cacheLock.Lock()
-	delete(c.Cache, k)
-	c.cacheLock.Unlock()
-
-	return true, nil
+	return nil
 }
