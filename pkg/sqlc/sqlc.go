@@ -9,6 +9,7 @@ import (
 	"github.com/bingoohuang/gokv"
 	"github.com/bingoohuang/gokv/pkg/codec"
 	"github.com/bingoohuang/gokv/pkg/util"
+	"go.uber.org/multierr"
 	"log"
 	"text/template"
 	"time"
@@ -28,12 +29,12 @@ type Client struct {
 }
 
 var (
-	ErrNoRowsAffected = errors.New("rowsAffected is 0")
-	ErrTooManyValues  = errors.New("too many values associated with the key")
+	// ErrTooManyValues is the error to identify more than one values associated with a key.
+	ErrTooManyValues = errors.New("more than one values associated with the key")
 )
 
 // Keys list the keys in the store.
-func (c Client) Keys() ([]string, error) {
+func (c Client) Keys() (keys []string, er error) {
 	t, err := template.New("").Parse(c.KeysSQL)
 	if err != nil {
 		return nil, err
@@ -51,7 +52,7 @@ func (c Client) Keys() ([]string, error) {
 		return nil, err
 	}
 
-	defer db.Close()
+	defer func() { er = multierr.Append(er, db.Close()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -83,7 +84,7 @@ func (c Client) Keys() ([]string, error) {
 // Set stores the given value for the given key.
 // Values are automatically marshalled to JSON or gob (depending on the configuration).
 // The key must not be "" and the value must not be nil.
-func (c Client) Set(k string, v interface{}, fns ...gokv.OptionFn) error {
+func (c Client) Set(k string, v interface{}, fns ...gokv.OptionFn) (er error) {
 	if err := util.CheckKeyAndValue(k, v); err != nil {
 		return err
 	}
@@ -125,7 +126,7 @@ func (c Client) Set(k string, v interface{}, fns ...gokv.OptionFn) error {
 		return err
 	}
 
-	defer db.Close()
+	defer func() { er = multierr.Append(er, db.Close()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -140,7 +141,7 @@ func (c Client) Set(k string, v interface{}, fns ...gokv.OptionFn) error {
 // that v points to with the values of the retrieved object's values.
 // If no value is found it returns (false, nil).
 // The key must not be "" and the pointer must not be nil.
-func (c Client) Get(k string, v interface{}, fn gokv.GeneratorFn) (found bool, option gokv.Option, err error) {
+func (c Client) Get(k string, v interface{}, fn gokv.GeneratorFn) (found bool, option gokv.Option, er error) {
 	if err := util.CheckKeyAndValue(k, v); err != nil {
 		return false, option, err
 	}
@@ -163,7 +164,7 @@ func (c Client) Get(k string, v interface{}, fn gokv.GeneratorFn) (found bool, o
 		return false, option, err
 	}
 
-	defer db.Close()
+	defer func() { er = multierr.Append(er, db.Close()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -215,14 +216,17 @@ func (c Client) Get(k string, v interface{}, fn gokv.GeneratorFn) (found bool, o
 		return false, option, err
 	}
 
-	c.Set(k, v, gokv.Apply(newOption))
+	if err := c.Set(k, v, gokv.Apply(newOption)); err != nil {
+		return false, option, err
+	}
+
 	return true, newOption, nil
 }
 
 // Del deletes the stored value for the given key.
 // Deleting a non-existing key-value pair does NOT lead to an error.
 // The key must not be "".
-func (c Client) Del(k string) (found bool, err error) {
+func (c Client) Del(k string) (found bool, er error) {
 	if err := util.CheckKey(k); err != nil {
 		return false, err
 	}
@@ -233,29 +237,29 @@ func (c Client) Del(k string) (found bool, err error) {
 	}
 
 	var out bytes.Buffer
-	if err := t.Execute(&out, map[string]string{"Key": k}); err != nil {
+	if err := t.Execute(&out, map[string]string{
+		"Key":  k,
+		"Time": time.Now().Format(`2006-01-02 15:04:05.000`),
+	}); err != nil {
 		return false, err
 	}
+
+	query := out.String()
+	log.Printf("D! query: %s", query)
 
 	db, err := sql.Open(c.DriverName, c.DataSourceName)
 	if err != nil {
 		return false, err
 	}
 
-	defer db.Close()
+	defer func() { er = multierr.Append(er, db.Close()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	result, err := db.ExecContext(ctx, out.String())
-	if err != nil {
+	if _, err := db.ExecContext(ctx, query); err != nil {
 		return false, err
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-
-	return rowsAffected > 0, nil
+	return true, nil
 }

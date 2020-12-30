@@ -52,13 +52,23 @@ func TestSQL(t *testing.T) {
 		Codec:          codec.JSON,
 	}
 
-	assert.Nil(t, client.Set("Key1", "bingoohuang"))
+	k := "Key1"
+	assert.Nil(t, client.Set(k, "bingoohuang"))
 
 	v := ""
-	found, option, err := client.Get("Key1", &v, nil)
+	found, option, err := client.Get(k, &v, nil)
 	assert.Nil(t, err)
 	assert.True(t, found)
 	assert.Equal(t, "bingoohuang", v)
+	assert.Equal(t, gokv.Option{}, option)
+
+	found, err = client.Del(k)
+	assert.True(t, found)
+	assert.Nil(t, err)
+
+	found, option, err = client.Get(k, &v, nil)
+	assert.Nil(t, err)
+	assert.False(t, found)
 	assert.Equal(t, gokv.Option{}, option)
 }
 
