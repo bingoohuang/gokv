@@ -3,7 +3,6 @@ package sqlc_test
 import (
 	"fmt"
 	"github.com/bingoohuang/gokv"
-	"github.com/bingoohuang/gokv/pkg/codec"
 	"github.com/bingoohuang/gokv/pkg/sqlc"
 	_ "github.com/go-sql-driver/mysql"
 	sqle "github.com/src-d/go-mysql-server"
@@ -42,34 +41,36 @@ func TestSQL(t *testing.T) {
 		}
 	}()
 
-	client := sqlc.Client{
+	client := sqlc.NewClient(sqlc.Config{
 		DriverName:     "mysql",
 		DataSourceName: fmt.Sprintf("user:pass@tcp(localhost:%d)/testdb", port),
 		KeysSQL:        "select k from kv where state = 1",
 		GetSQL:         "select v, option from kv where k = '{{.Key}}' and state = 1",
 		SetSQL:         "update kv set v = '{{.Value}}', updated = '{{.Time}}' where k = '{{.Key}}' and state = 1",
 		DeleteSQL:      "update kv set state = 0, updated = '{{.Time}}' where k = '{{.Key}}' and state = 1",
-		Codec:          codec.JSON,
-	}
+	})
 
 	k := "Key1"
 	assert.Nil(t, client.Set(k, "bingoohuang"))
 
-	v := ""
-	found, option, err := client.Get(k, &v, nil)
+	found, v, option, err := client.Get(k, nil)
 	assert.Nil(t, err)
 	assert.True(t, found)
 	assert.Equal(t, "bingoohuang", v)
-	assert.Equal(t, gokv.Option{}, option)
 
 	found, err = client.Del(k)
 	assert.True(t, found)
 	assert.Nil(t, err)
 
-	found, option, err = client.Get(k, &v, nil)
+	found, v, option, err = client.Get(k, nil)
 	assert.Nil(t, err)
 	assert.False(t, found)
 	assert.Equal(t, gokv.Option{}, option)
+
+	client.Get("Key2", nil)
+	client.Get("Key3", nil)
+
+	assert.Nil(t, client.Refresh())
 }
 
 func createTestDatabase(dbName string) (*memory.Database, error) {

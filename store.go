@@ -3,13 +3,12 @@ package gokv
 import "time"
 
 type (
-	GeneratorFn func(k string, v interface{}) (Option, error)
+	GeneratorFn func(k string) (string, Option, error)
 	OptionFn    func(*Option)
 	OptionFns   []OptionFn
 
 	Option struct {
-		Expired    time.Duration
-		CreateTime string
+		Expired time.Time
 	}
 )
 
@@ -21,7 +20,7 @@ func (o OptionFns) Apply(option *Option) *Option {
 	return option
 }
 
-func Expired(v time.Duration) OptionFn { return func(o *Option) { o.Expired = v } }
+func Expired(v time.Duration) OptionFn { return func(o *Option) { o.Expired = time.Now().Add(v) } }
 func Apply(v Option) OptionFn          { return func(o *Option) { *o = v } }
 
 type StoreKeys interface {
@@ -34,26 +33,17 @@ type StoreSet interface {
 	// The implementation automatically marshalls the value.
 	// The marshalling format depends on the implementation. It can be JSON, gob etc.
 	// The key must not be "" and the value must not be nil.
-	Set(k string, v interface{}, fns ...OptionFn) error
+	Set(k, v string, fns ...OptionFn) error
 }
 
 type StoreGet interface {
 	// Get retrieves the value for the given key.
-	// The implementation automatically unmarshalls the value.
-	// The unmarshalling source depends on the implementation. It can be JSON, gob etc.
-	// The automatic unmarshalling requires a pointer to an object of the correct type
-	// being passed as parameter.
-	// In case of a struct the Get method will populate the fields of the object
-	// that the passed pointer points to with the values of the retrieved object's values.
-	// If no value is found it returns (false, nil).
-	// The key must not be "" and the pointer must not be nil.
-	Get(k string, v interface{}, fn GeneratorFn) (found bool, option Option, err error)
+	Get(k string, fn GeneratorFn) (found bool, v string, option Option, err error)
 }
 
 type StoreDel interface {
 	// Del deletes the stored value for the given key.
 	// Deleting a non-existing key-value pair does NOT lead to an error.
-	// The key must not be "".
 	Del(k string) (found bool, err error)
 }
 

@@ -1,6 +1,8 @@
 package util
 
-import "errors"
+import (
+	"errors"
+)
 
 // CheckKeyAndValue returns an error if k == "" or if v == nil
 func CheckKeyAndValue(k string, v interface{}) error {
