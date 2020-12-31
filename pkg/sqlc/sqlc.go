@@ -17,10 +17,10 @@ type Config struct {
 	DriverName     string
 	DataSourceName string
 
-	KeysSQL   string
-	GetSQL    string
-	SetSQL    string
-	DeleteSQL string
+	AllSQL string
+	GetSQL string
+	SetSQL string
+	DelSQL string
 
 	// RefreshInterval will Refresh the key values from the database in every Refresh interval.
 	RefreshInterval time.Duration
@@ -30,7 +30,7 @@ type Config struct {
 type Client struct {
 	Config
 
-	cache     map[string]CacheValue
+	cache     map[string]string
 	cacheLock sync.Mutex
 }
 
@@ -48,28 +48,30 @@ func Default(s, defaultValue string) string {
 	return s
 }
 
+const (
+	DefaultAllSQL = `select k,v from kv where state = 1`
+	DefaultGetSQL = `select v from kv where k = '{{.Key}}' and state = 1`
+	DefaultSetSQL = `insert into kv(k, v, state, created) values('{{.Key}}', '{{.Value}}', 1, '{{.Time}}') 
+					 on duplicate key update v = '{{.Value}}', updated = '{{.Time}}', state = 1`
+	DefaultDelSQL = `update kv set state = 0  where k = '{{.Key}}'`
+)
+
 func NewClient(c Config) *Client {
 	c.RefreshInterval = DefaultDuration(c.RefreshInterval, 60*time.Second)
 	c.DriverName = Default(c.DriverName, "mysql")
-	c.KeysSQL = Default(c.KeysSQL, "select k from kv where state = 1")
-	c.GetSQL = Default(c.GetSQL, "select v from kv where k = '{{.Key}}' and state = 1")
-	c.SetSQL = Default(c.SetSQL, "update kv set v = '{{.Value}}', updated = '{{.Time}}' where k = '{{.Key}}' and state = 1")
-	c.DeleteSQL = Default(c.DeleteSQL, "update kv set state = 0, updated = '{{.Time}}' where k = '{{.Key}}' and state = 1")
+	c.AllSQL = Default(c.AllSQL, DefaultAllSQL)
+	c.GetSQL = Default(c.GetSQL, DefaultGetSQL)
+	c.SetSQL = Default(c.SetSQL, DefaultSetSQL)
+	c.DelSQL = Default(c.DelSQL, DefaultDelSQL)
 
 	client := &Client{
 		Config: c,
-		cache:  make(map[string]CacheValue),
+		cache:  make(map[string]string),
 	}
 
 	go client.tickerRefresh()
 
 	return client
-}
-
-// CacheValue is a holder for value and option associated with a key.
-type CacheValue struct {
-	Value      string
-	UpdateTime time.Time
 }
 
 var (
@@ -80,51 +82,15 @@ var (
 func (c *Client) tickerRefresh() {
 	ticker := time.NewTicker(c.RefreshInterval)
 	for range ticker.C {
-		if err := c.Refresh(); err != nil {
+		if _, err := c.All(); err != nil {
 			log.Printf("W! refersh error %v", err)
 		}
 	}
 }
 
-func (c *Client) Refresh() error {
-	keys, err := c.Keys()
-	if err != nil {
-		return err
-	}
-
-	keysMap := map[string]bool{}
-	for _, k := range keys {
-		keysMap[k] = true
-	}
-
-	cacheKeys := make([]string, 0)
-
-	c.cacheLock.Lock()
-	for k := range c.cache {
-		if !keysMap[k] {
-			delete(c.cache, k)
-		} else {
-			cacheKeys = append(cacheKeys, k)
-		}
-	}
-	c.cacheLock.Unlock()
-
-	for _, k := range cacheKeys {
-		c.cacheLock.Lock()
-		delete(c.cache, k)
-		c.cacheLock.Unlock()
-
-		if _, _, err := c.Get(k); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // Keys list the keys in the store.
-func (c *Client) Keys() (keys []string, er error) {
-	t, err := template.New("").Parse(c.KeysSQL)
+func (c *Client) All() (kvs map[string]string, er error) {
+	t, err := template.New("").Parse(c.AllSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -152,9 +118,9 @@ func (c *Client) Keys() (keys []string, er error) {
 	}
 
 	cols, _ := rows.Columns()
-	results := make([]string, 0)
+	kvs = make(map[string]string)
 	for row := 0; rows.Next(); row++ {
-		columns := make([]string, len(cols))
+		columns := make([]sql.NullString, len(cols))
 		pointers := make([]interface{}, len(cols))
 		for i := range columns {
 			pointers[i] = &columns[i]
@@ -164,10 +130,14 @@ func (c *Client) Keys() (keys []string, er error) {
 			return nil, err
 		}
 
-		results = append(results, columns[0])
+		kvs[columns[0].String] = columns[1].String
 	}
 
-	return results, nil
+	c.cacheLock.Lock()
+	c.cache = kvs
+	c.cacheLock.Unlock()
+
+	return kvs, nil
 }
 
 // Set stores the given value for the given key.
@@ -206,10 +176,7 @@ func (c *Client) Set(k, v string) (er error) {
 	}
 
 	c.cacheLock.Lock()
-	c.cache[k] = CacheValue{
-		Value:      v,
-		UpdateTime: time.Now(),
-	}
+	c.cache[k] = v
 	c.cacheLock.Unlock()
 
 	return nil
@@ -225,7 +192,7 @@ func (c *Client) Get(k string) (found bool, v string, er error) {
 	if v, ok := c.cache[k]; ok {
 		c.cacheLock.Unlock()
 
-		return true, v.Value, nil
+		return true, v, nil
 	}
 	c.cacheLock.Unlock()
 
@@ -280,10 +247,7 @@ func (c *Client) Get(k string) (found bool, v string, er error) {
 
 	if row == 1 {
 		c.cacheLock.Lock()
-		c.cache[k] = CacheValue{
-			Value:      v,
-			UpdateTime: time.Now(),
-		}
+		c.cache[k] = v
 		c.cacheLock.Unlock()
 
 		return true, v, nil
@@ -310,7 +274,7 @@ func (c *Client) Del(k string) (er error) {
 
 }
 func (c *Client) del(k string) (er error) {
-	t, err := template.New("").Parse(c.DeleteSQL)
+	t, err := template.New("").Parse(c.DelSQL)
 	if err != nil {
 		return err
 	}

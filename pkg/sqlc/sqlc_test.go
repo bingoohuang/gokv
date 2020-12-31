@@ -42,6 +42,7 @@ func TestSQL(t *testing.T) {
 
 	client := sqlc.NewClient(sqlc.Config{
 		DataSourceName: fmt.Sprintf("user:pass@tcp(localhost:%d)/testdb", port),
+		SetSQL:         "update kv set v = '{{.Value}}', updated = '{{.Time}}' where k = '{{.Key}}' and state = 1",
 	})
 
 	k := "Key1"
@@ -61,8 +62,6 @@ func TestSQL(t *testing.T) {
 
 	client.Get("Key2")
 	client.Get("Key3")
-
-	assert.Nil(t, client.Refresh())
 }
 
 func createTestDatabase(dbName string) (*memory.Database, error) {

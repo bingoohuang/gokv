@@ -1,11 +1,8 @@
 package gokv
 
-type StoreKeys interface {
-	// Keys list the keys in the store.
-	Keys() ([]string, error)
-}
-
 type Store interface {
+	// Keys list the keys in the store.
+	All() (map[string]string, error)
 	// Set stores the given value for the given key.
 	Set(k, v string) error
 	// Get retrieves the value for the given key.
